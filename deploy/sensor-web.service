@@ -1,0 +1,54 @@
+# ============================================================================
+#  Week1 传感数据服务 —— systemd 服务单元
+#
+#  安装（在 VPS 上以 root 执行）：
+#    1) 把整个项目放到 /opt/esp32-sensor-web
+#    2) 创建专用账号（不要用 root 跑服务）
+#         useradd -r -s /usr/sbin/nologin sensor
+#         mkdir -p /var/lib/sensor-web && chown -R sensor:sensor /var/lib/sensor-web
+#         chown -R sensor:sensor /opt/esp32-sensor-web
+#    3) 改下面三处：DEVICE_TOKEN / WorkingDirectory / User
+#    4) cp deploy/sensor-web.service /etc/systemd/system/
+#         systemctl daemon-reload
+#         systemctl enable --now sensor-web
+#    5) 看日志：  journalctl -u sensor-web -f
+#    6) 开放防火墙：  ufw allow 8080/tcp     （只走 nginx 的话就不开）
+# ============================================================================
+
+[Unit]
+Description=Week1 ESP32 Sensor Ingest + Web (Node, zero-dep)
+Documentation=file:///opt/esp32-sensor-web/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sensor
+Group=sensor
+WorkingDirectory=/opt/esp32-sensor-web/server
+
+# ⚠ 上线前务必改掉 DEVICE_TOKEN，必须和板端 config.h 里的一致
+Environment=NODE_ENV=production
+Environment=PORT=8080
+Environment=HOST=127.0.0.1
+Environment=DEVICE_TOKEN=CHANGE_ME_TO_A_LONG_RANDOM_STRING
+Environment=DATA_DIR=/var/lib/sensor-web
+
+ExecStart=/usr/bin/node server.js
+
+# 数据落了盘，进程挂了要自动爬起来
+Restart=always
+RestartSec=3
+
+# 基本的加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sensor-web
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

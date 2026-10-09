@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IMU 实时数据 · 板端 → VPS → 浏览器</title>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#141a21; --panel2:#1a222c; --border:#22303f;
+    --fg:#e6edf3; --muted:#8b98a5; --accent:#4aa8ff;
+    --ok:#3ecf72; --warn:#e3b341; --err:#f2555a;
+    --cx:#ff8a5c; --cy:#5ad1a0; --cz:#6fa8ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  a{color:var(--accent)}
+  .wrap{max-width:1180px;margin:0 auto;padding:20px}
+
+  header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;
+         justify-content:space-between;margin-bottom:18px}
+  h1{font-size:18px;margin:0;font-weight:600;letter-spacing:.2px}
+  h1 small{color:var(--muted);font-weight:400;font-size:12px;margin-left:8px}
+  .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  select,input{background:var(--panel2);color:var(--fg);border:1px solid var(--border);
+               border-radius:7px;padding:6px 9px;font-size:13px;outline:none}
+  select:focus,input:focus{border-color:var(--accent)}
+
+  .badge{display:inline-flex;align-items:center;gap:7px;padding:5px 12px;border-radius:999px;
+         font-size:13px;font-weight:600;border:1px solid transparent}
+  .badge .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
+  .b-ok  {color:var(--ok);  background:rgba(62,207,114,.12); border-color:rgba(62,207,114,.35)}
+  .b-warn{color:var(--warn);background:rgba(227,179,65,.12); border-color:rgba(227,179,65,.35)}
+  .b-err {color:var(--err); background:rgba(242,85,90,.12); border-color:rgba(242,85,90,.35)}
+  .b-idle{color:var(--muted);background:rgba(139,152,165,.12);border-color:rgba(139,152,165,.3)}
+
+  .grid{display:grid;grid-template-columns:1.05fr 1fr;gap:14px}
+  @media(max-width:860px){.grid{grid-template-columns:1fr}}
+
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px}
+  .card h2{margin:0 0 12px;font-size:13px;font-weight:600;color:var(--muted);
+           text-transform:uppercase;letter-spacing:.6px}
+
+  .big{font-size:56px;font-weight:700;line-height:1;letter-spacing:-1.5px;
+       font-variant-numeric:tabular-nums}
+  .big .unit{font-size:20px;font-weight:500;color:var(--muted);margin-left:8px;letter-spacing:0}
+  .bigsub{color:var(--muted);font-size:13px;margin-top:8px}
+
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:7px 8px;text-align:left;border-bottom:1px solid var(--border)}
+  th{color:var(--muted);font-weight:500;font-size:12px}
+  td.num{font-variant-numeric:tabular-nums;text-align:right;font-family:ui-monospace,Consolas,monospace}
+  tr:last-child td{border-bottom:none}
+  .axis-x{color:var(--cx)} .axis-y{color:var(--cy)} .axis-z{color:var(--cz)}
+  .na{color:var(--muted);font-style:italic}
+
+  .chartbar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+  .chip{background:var(--panel2);border:1px solid var(--border);color:var(--muted);
+        padding:4px 11px;border-radius:999px;font-size:12px;cursor:pointer;user-select:none}
+  .chip:hover{color:var(--fg);border-color:#31445a}
+  .chip.on{background:rgba(74,168,255,.16);border-color:var(--accent);color:var(--accent);font-weight:600}
+  canvas{width:100%;height:210px;display:block}
+
+  .muted{color:var(--muted)}
+  .mono{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+  .foot{margin-top:16px;color:var(--muted);font-size:12px;line-height:1.8}
+  .tag{display:inline-block;background:var(--panel2);border:1px solid var(--border);
+       border-radius:5px;padding:1px 7px;margin-right:6px;font-size:11px;color:var(--muted)}
+  .notice{margin-top:10px;padding:9px 12px;border-radius:8px;font-size:13px;display:none}
+  .n-warn{display:block;background:rgba(227,179,65,.1);border:1px solid rgba(227,179,65,.3);color:var(--warn)}
+  .n-err {display:block;background:rgba(242,85,90,.1); border:1px solid rgba(242,85,90,.3); color:var(--err)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>IMU 实时数据<small>板端 → VPS → 浏览器（本页不做任何改写，只显示服务端收到的原始记录）</small></h1>
+    <div class="controls">
+      <span id="badge" class="badge b-idle"><span class="dot"></span><span id="badgeText">连接中…</span></span>
+      <select id="devSel" title="选择设备"></select>
+      <label class="muted" style="font-size:12px">刷新
+        <input id="ivl" type="number" min="500" step="500" value="1500" style="width:74px">ms
+      </label>
+    </div>
+  </header>
+
+  <div id="notice" class="notice"></div>
+
+  <div class="grid">
+    <!-- 左：主数值 -->
+    <div class="card">
+      <h2>最新观测值（服务端记录）</h2>
+      <div class="big"><span id="bigVal">--</span><span class="unit" id="bigUnit"></span></div>
+      <div class="bigsub" id="bigSub">等待数据…</div>
+
+      <table style="margin-top:16px">
+        <tr><th style="width:38%">字段</th><th>值</th></tr>
+        <tr><td>设备 ID</td><td class="mono" id="mDev">--</td></tr>
+        <tr><td>传感器 / 陀螺仪</td><td class="mono" id="mSens">--</td></tr>
+        <tr><td>板端时间 (NTP)</td><td class="mono" id="mTd">--</td></tr>
+        <tr><td>服务端收到时间</td><td class="mono" id="mTs">--</td></tr>
+        <tr><td>数据年龄</td><td class="mono" id="mAge">--</td></tr>
+        <tr><td>序号 / 运行时长</td><td class="mono" id="mSeq">--</td></tr>
+        <tr><td>MAC / 信号</td><td class="mono" id="mMac">--</td></tr>
+        <tr><td>来源 IP / 固件</td><td class="mono" id="mIp">--</td></tr>
+      </table>
+    </div>
+
+    <!-- 右：六轴 -->
+    <div class="card">
+      <h2>六轴分量</h2>
+      <table>
+        <tr><th>轴</th><th style="text-align:right">加速度 (g)</th><th style="text-align:right">角速度 (dps)</th></tr>
+        <tr><td class="axis-x">X</td><td class="num" id="axX">--</td><td class="num" id="gxX">--</td></tr>
+        <tr><td class="axis-y">Y</td><td class="num" id="axY">--</td><td class="num" id="gxY">--</td></tr>
+        <tr><td class="axis-z">Z</td><td class="num" id="axZ">--</td><td class="num" id="gxZ">--</td></tr>
+        <tr><td class="muted">合矢量 |·|</td><td class="num" id="axM">--</td><td class="num" id="gxM">--</td></tr>
+      </table>
+      <div class="foot" style="margin-top:14px">
+        <b class="muted">核对方法：</b>板子平放静止时，加速度合矢量应 ≈ <b>1.000 g</b>，X/Y ≈ 0；
+        陀螺仪三个轴应 ≈ <b>0 dps</b>；转动板子时陀螺仪会立刻出现明显读数。
+        若你的板载 IMU 无陀螺仪（如 ESP32-S3-EYE 的 QMA7981），右列会显示 n/a。
+      </div>
+    </div>
+  </div>
+
+  <!-- 曲线 -->
+  <div class="card" style="margin-top:14px">
+    <h2>最近 120 条记录曲线</h2>
+    <div class="chartbar" id="chips"></div>
+    <canvas id="cv"></canvas>
+    <div class="foot">横轴 = 记录序号（时间从左到右），纵轴 = 所选指标。停采后曲线会停止延伸，右侧数值保留不变。</div>
+  </div>
+
+  <!-- 原始记录 -->
+  <div class="card" style="margin-top:14px">
+    <h2>原始记录（服务端 NDJSON 最后 8 条，用于证明页面未写死数值）</h2>
+    <div style="overflow:auto">
+      <table>
+        <thead><tr>
+          <th>server_iso</th><th>device_id</th><th>seq</th><th>metric</th>
+          <th style="text-align:right">value</th><th>unit</th>
+          <th style="text-align:right">accel x/y/z</th><th style="text-align:right">gyro x/y/z</th>
+          <th>ts_device</th><th>src_ip</th>
+        </tr></thead>
+        <tbody id="rawBody"><tr><td colspan="10" class="muted">暂无记录</td></tr></tbody>
+      </table>
+    </div>
+    <div class="foot" style="margin-top:12px">
+      <span class="tag">GET /api/health</span><a href="/api/health" target="_blank">服务状态</a>
+      <span class="tag" style="margin-left:12px">GET /api/history?device=&lt;id&gt;</span><a href="#" id="lnkHist">原始 JSON</a>
+      <span class="tag" style="margin-left:12px">GET /api/export.csv</span><a href="#" id="lnkCsv">导出 CSV</a>
+    </div>
+  </div>
+
+  <div class="foot">
+    数据链路：ESP32 采样 → HTTP POST <span class="mono">/api/ingest</span>（带 X-Device-Token）
+    → 服务端落盘 <span class="mono">server/data/records.ndjson</span> → 本页只读展示。
+    页面上的每一个数字都直接来自接口返回，没有任何硬编码。
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var STALE_MS = 6000;                 // 超过这个时间没新记录 → 判定"未更新"
+  var LATEST_N = 120;                  // 曲线取多少条
+  var RAW_N = 8;                       // 原始表显示多少条
+
+  var deviceId = new URLSearchParams(location.search).get('device') || null;
+  var series = 'accel_mag';
+  var timer = null;
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  /* ---------- 取值工具：从一条记录里取出某个曲线序列的值 ---------- */
+  function seriesValue(rec, key) {
+    if (!rec) return null;
+    if (key === 'accel_mag') return typeof rec.value === 'number' ? rec.value : null;
+    var ax = rec.axes && rec.axes.accel;
+    var gy = rec.axes && rec.axes.gyro;
+    if (key.indexOf('accel_') === 0) { var k = key.slice(6); return ax && typeof ax[k] === 'number' ? ax[k] : null; }
+    if (key.indexOf('gyro_') === 0)  { var g = key.slice(5); return gy && typeof gy[g] === 'number' ? gy[g] : null; }
+    return null;
+  }
+
+  function fmt(v, d) { return (typeof v === 'number' && isFinite(v)) ? v.toFixed(d) : '--'; }
+  function localTime(ms) { return ms ? new Date(ms).toLocaleString('zh-CN', { hour12: false }) : '--'; }
+  function epochTime(s) { return (typeof s === 'number' && s > 1700000000) ? new Date(s * 1000).toLocaleString('zh-CN', { hour12: false }) : '（NTP 未对准）'; }
+  function humanAge(ms) {
+    if (ms === null || ms === undefined) return '--';
+    if (ms < 1000) return Math.round(ms) + ' ms';
+    if (ms < 60000) return (ms / 1000).toFixed(1) + ' 秒';
+    return (ms / 60000).toFixed(1) + ' 分钟';
+  }
+
+  /* ---------- 状态徽章 & 提示条 ---------- */
+  function setBadge(kind, text) {
+    var b = $('badge');
+    b.className = 'badge ' + kind;
+    $('badgeText').textContent = text;
+  }
+  function setNotice(text, kind) {
+    var n = $('notice');
+    if (!text) { n.className = 'notice'; n.textContent = ''; return; }
+    n.className = 'notice ' + (kind === 'err' ? 'n-err' : 'n-warn');
+    n.textContent = text;
+  }
+
+  /* ---------- 曲线 ---------- */
+  function drawChart(records) {
+    var cv = $('cv');
+    var dpr = window.devicePixelRatio || 1;
+    var w = cv.clientWidth, h = cv.clientHeight;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    var g = cv.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+
+    var pts = [];
+    for (var i = 0; i < records.length; i++) {
+      var v = seriesValue(records[i], series);
+      if (v !== null) pts.push(v);
+    }
+
+    var padL = 52, padR = 12, padT = 12, padB = 24;
+    var plotW = w - padL - padR, plotH = h - padT - padB;
+
+    if (pts.length < 2) {
+      g.fillStyle = '#8b98a5'; g.font = '13px sans-serif';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(pts.length === 0 ? '该指标暂无数据（可能传感器不支持该轴）' : '数据点不足，继续等待…',
+                 w / 2, h / 2);
+      return;
+    }
+
+    var rawMin = Math.min.apply(null, pts), rawMax = Math.max.apply(null, pts);
+    var min = rawMin, max = rawMax;
+    if (max - min < 1e-9) { min -= 0.5; max += 0.5; }
+    var pad = (max - min) * 0.12; min -= pad; max += pad;
+
+    g.strokeStyle = '#22303f'; g.lineWidth = 1;
+    g.fillStyle = '#8b98a5'; g.font = '11px ui-monospace,Consolas,monospace';
+    g.textAlign = 'right'; g.textBaseline = 'middle';
+    for (var k = 0; k <= 4; k++) {
+      var y = padT + plotH * k / 4;
+      g.beginPath(); g.moveTo(padL, y); g.lineTo(padL + plotW, y); g.stroke();
+      g.fillText((max - (max - min) * k / 4).toFixed(3), padL - 8, y);
+    }
+
+    var color = series.indexOf('gyro') === 0 ? '#e3b341'
+              : series === 'accel_x' ? '#ff8a5c'
+              : series === 'accel_y' ? '#5ad1a0'
+              : series === 'accel_z' ? '#6fa8ff' : '#4aa8ff';
+
+    g.beginPath();
+    for (var j = 0; j < pts.length; j++) {
+      var x = padL + plotW * (pts.length === 1 ? 0.5 : j / (pts.length - 1));
+      var yy = padT + plotH * (1 - (pts[j] - min) / (max - min));
+      if (j === 0) g.moveTo(x, yy); else g.lineTo(x, yy);
+    }
+    g.strokeStyle = color; g.lineWidth = 2; g.lineJoin = 'round'; g.stroke();
+
+    g.lineTo(padL + plotW, padT + plotH); g.lineTo(padL, padT + plotH); g.closePath();
+    g.fillStyle = color + '1a';           // 八位十六进制 = 带透明度的填充
+    g.fill();
+
+    g.fillStyle = '#8b98a5'; g.textAlign = 'left'; g.textBaseline = 'top';
+    g.fillText('共 ' + pts.length + ' 个有效点（区间 ' + rawMin.toFixed(3) + ' ~ ' + rawMax.toFixed(3) + '）',
+               padL, h - padB + 6);
+  }
+
+  /* ---------- 渲染 ---------- */
+  function render(latest, hist, devices) {
+    var rec = latest.record;
+
+    // 设备下拉
+    var sel = $('devSel');
+    var want = devices.map(function (d) { return d.device_id; }).join('|');
+    if (sel.dataset.sig !== want) {
+      sel.dataset.sig = want;
+      sel.innerHTML = '';
+      if (!devices.length) {
+        var o = document.createElement('option');
+        o.textContent = '（暂无设备）'; sel.appendChild(o);
+      }
+      devices.forEach(function (d) {
+        var o = document.createElement('option');
+        o.value = d.device_id;
+        o.textContent = d.device_id + '  ·  ' + d.count + ' 条';
+        if (d.device_id === deviceId) o.selected = true;
+        sel.appendChild(o);
+      });
+    }
+
+    // 状态
+    if (!latest.has_data) {
+      setBadge('b-err', '无数据');
+      setNotice('该设备在服务端还没有任何记录。板端是否已上电 / 连上 WiFi？'
+        + '先看串口有没有 [DATA] 行，再检查 SERVER_INGEST_URL 和 DEVICE_TOKEN。', 'err');
+    } else if (latest.age_ms <= STALE_MS) {
+      setBadge('b-ok', '数据实时');
+      setNotice(null);
+    } else if (latest.age_ms <= STALE_MS * 4) {
+      setBadge('b-warn', '数据迟滞');
+      setNotice('已 ' + humanAge(latest.age_ms) + ' 没有新记录。'
+        + '若是你按了 BOOT 键暂停采样，属正常；否则检查供电 / WiFi / 服务端。', 'warn');
+    } else {
+      setBadge('b-err', '未更新');
+      setNotice('已 ' + humanAge(latest.age_ms) + ' 没有新记录，页面保留的是最后一次观测（'
+        + localTime(rec.server_ts_ms) + '，值 ' + fmt(rec.value, 4) + ' ' + (rec.unit || '')
+        + '）。请检查板端是否仍在运行。', 'err');
+    }
+
+    // 停采标记
+    if (rec && rec.sampling === false && latest.age_ms <= STALE_MS * 4) {
+      setNotice('设备上报了 sampling=false：板端已主动暂停采样，旧记录仍然保留在服务端。', 'warn');
+    }
+
+    // 主数值
+    $('bigVal').textContent = rec ? fmt(rec.value, rec.unit === 'degC' ? 2 : 4) : '--';
+    $('bigUnit').textContent = rec && rec.unit ? rec.unit : '';
+    $('bigSub').textContent = rec
+      ? (rec.metric || '') + ' · 第 ' + (rec.seq == null ? '?' : rec.seq) + ' 次上报 · ' + localTime(rec.server_ts_ms)
+      : '等待数据…';
+
+    // 元信息
+    $('mDev').textContent = rec ? (rec.device_id || '--') : '--';
+    $('mSens').textContent = rec ? ((rec.sensor || '--') + (rec.has_gyro ? '（含陀螺仪）' : '（无陀螺仪）')) : '--';
+    $('mTd').textContent = rec ? epochTime(rec.ts_device) : '--';
+    $('mTs').textContent = rec ? localTime(rec.server_ts_ms) : '--';
+    $('mAge').textContent = rec ? humanAge(latest.age_ms) : '--';
+    $('mSeq').textContent = rec
+      ? ('#' + (rec.seq == null ? '?' : rec.seq) + ' / ' + (rec.uptime_ms ? (rec.uptime_ms / 1000).toFixed(1) + ' s' : '--'))
+      : '--';
+    $('mMac').textContent = rec
+      ? ((rec.mac || '--') + ' / ' + (rec.rssi == null ? '--' : rec.rssi + ' dBm'))
+      : '--';
+    $('mIp').textContent = rec
+      ? ((rec.src_ip || '--') + ' / ' + (rec.fw || '--'))
+      : '--';
+
+    // 六轴
+    var a = (rec && rec.axes && rec.axes.accel) || null;
+    var gy = (rec && rec.axes && rec.axes.gyro) || null;
+    $('axX').textContent = a ? fmt(a.x, 4) : '--';
+    $('axY').textContent = a ? fmt(a.y, 4) : '--';
+    $('axZ').textContent = a ? fmt(a.z, 4) : '--';
+    $('axM').textContent = rec ? fmt(rec.value, 4) : '--';
+    $('gxX').textContent = gy ? fmt(gy.x, 2) : 'n/a';
+    $('gxY').textContent = gy ? fmt(gy.y, 2) : 'n/a';
+    $('gxZ').textContent = gy ? fmt(gy.z, 2) : 'n/a';
+    $('gxM').textContent = gy ? fmt(Math.sqrt(gy.x * gy.x + gy.y * gy.y + gy.z * gy.z), 2) : 'n/a';
+
+    // 曲线
+    drawChart(hist.records || []);
+
+    // 原始表
+    var body = $('rawBody');
+    var rows = (hist.records || []).slice(-RAW_N).reverse();
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="10" class="muted">暂无记录</td></tr>';
+    } else {
+      body.innerHTML = rows.map(function (r) {
+        var aa = (r.axes && r.axes.accel) || null;
+        var gg = (r.axes && r.axes.gyro) || null;
+        var tsv = (typeof r.ts_device === 'number' && r.ts_device > 1700000000)
+          ? new Date(r.ts_device * 1000).toLocaleTimeString('zh-CN', { hour12: false }) : '--';
+        return '<tr>'
+          + '<td class="mono">' + (r.server_iso || '') + '</td>'
+          + '<td class="mono">' + (r.device_id || '') + '</td>'
+          + '<td class="num">' + (r.seq == null ? '--' : r.seq) + '</td>'
+          + '<td class="mono">' + (r.metric || '') + '</td>'
+          + '<td class="num">' + fmt(r.value, 4) + '</td>'
+          + '<td>' + (r.unit || '') + '</td>'
+          + '<td class="num">' + (aa ? fmt(aa.x, 3) + ' / ' + fmt(aa.y, 3) + ' / ' + fmt(aa.z, 3) : '--') + '</td>'
+          + '<td class="num">' + (gg ? fmt(gg.x, 1) + ' / ' + fmt(gg.y, 1) + ' / ' + fmt(gg.z, 1) : '<span class="na">n/a</span>') + '</td>'
+          + '<td class="mono">' + tsv + '</td>'
+          + '<td class="mono">' + (r.src_ip || '') + '</td>'
+          + '</tr>';
+      }).join('');
+    }
+
+    // 链接
+    var q = '?device=' + encodeURIComponent(deviceId || '') + '&limit=' + LATEST_N;
+    $('lnkHist').href = '/api/history' + q;
+    $('lnkCsv').href = '/api/export.csv?device=' + encodeURIComponent(deviceId || '');
+  }
+
+  /* ---------- 拉数据 ---------- */
+  function tick() {
+    var devsP = fetch('/api/devices').then(function (r) { return r.json(); });
+    devsP.then(function (dv) {
+      var devices = (dv && dv.devices) || [];
+      if (!deviceId && devices.length) deviceId = devices[0].device_id;
+      var dq = deviceId ? '?device=' + encodeURIComponent(deviceId) : '';
+      return Promise.all([
+        fetch('/api/latest' + dq).then(function (r) { return r.json(); }),
+        fetch('/api/history' + dq + (dq ? '&' : '?') + 'limit=' + LATEST_N).then(function (r) { return r.json(); }),
+      ]).then(function (res) { render(res[0], res[1], devices); });
+    }).catch(function (e) {
+      setBadge('b-err', '连不上服务端');
+      setNotice('无法访问 /api/* ：' + e.message + '。确认服务进程还在跑（journalctl / 控制台）。', 'err');
+    });
+  }
+
+  /* ---------- 曲线切换按钮 ---------- */
+  var SERIES = [
+    ['accel_mag', '|a| 合矢量 (g)'], ['accel_x', 'accel X'], ['accel_y', 'accel Y'], ['accel_z', 'accel Z'],
+    ['gyro_x', 'gyro X (dps)'], ['gyro_y', 'gyro Y'], ['gyro_z', 'gyro Z']
+  ];
+  var chips = $('chips');
+  SERIES.forEach(function (s) {
+    var el = document.createElement('span');
+    el.className = 'chip' + (s[0] === series ? ' on' : '');
+    el.textContent = s[1];
+    el.onclick = function () {
+      series = s[0];
+      Array.prototype.forEach.call(chips.children, function (c) { c.classList.remove('on'); });
+      el.classList.add('on');
+      tick();
+    };
+    chips.appendChild(el);
+  });
+
+  $('devSel').onchange = function (e) {
+    deviceId = e.target.value;
+    history.replaceState(null, '', '?device=' + encodeURIComponent(deviceId));
+    tick();
+  };
+
+  $('ivl').onchange = function (e) {
+    var ms = Math.max(500, parseInt(e.target.value, 10) || 1500);
+    e.target.value = ms;
+    clearInterval(timer);
+    timer = setInterval(tick, ms);
+  };
+
+  tick();
+  timer = setInterval(tick, 1500);
+  window.addEventListener('resize', function () { tick(); });
+})();
+</script>
+</body>
+</html>

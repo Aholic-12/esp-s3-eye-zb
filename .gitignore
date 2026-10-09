@@ -1,0 +1,15 @@
+# ---------- 板端 ----------
+# 里面是 WiFi 密码 + VPS 地址，绝对不要提交
+firmware/include/config.h
+firmware/.pio/
+firmware/.vscode/
+
+# ---------- 服务端 ----------
+# 运行期产生的原始记录，不进仓库（要交作业的话单独拷出来）
+server/data/
+server/node_modules/
+*.log
+
+# ---------- 系统 ----------
+.DS_Store
+Thumbs.db
